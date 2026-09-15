@@ -1,0 +1,90 @@
+---
+title: 'Production LLM Rate-Limit & Backoff Handling'
+description: 'How to configure resilient exponential backoff and jitter for high-throughput Swarms agents'
+icon: 'shield-check'
+---
+
+When deploying autonomous multi-agent swarms into production, high-frequency tool invocations and concurrent agent dialogues frequently hit downstream LLM provider rate limits (HTTP 429 / RateLimitError).
+
+Without exponential backoff and jitter, retries cluster into synchronized stampedes, cascading into provider-level rate limit locks. This guide demonstrates how to configure resilient rate-limit handling and token-bucket pacing across Swarms agents.
+
+## Why na\xc3\xafve retries fail
+
+A fixed-interval retry loop causes all blocked agents to wake simultaneously:
+
+\text{Retry Time} = t_0 + n \times \Delta t
+
+When multiple agents in a ConcurrentWorkflow retry at the exact same second, the LLM provider experiences synchronized load spikes.
+
+To eliminate stampedes, production swarms must apply **Full Jitter Exponential Backoff**:
+
+T_{\text{sleep}} = \text{random}(0, \min(T_{\text{max}}, T_{\text{base}} \times 2^{\text{attempt}}))
+
+## Implementing jittered backoff for custom agents
+
+You can wrap any agent execution pipeline with a robust decorator using standard library primitives:
+
+`python
+import random
+import time
+import functools
+from typing import Callable, Any
+
+def retry_with_exponential_backoff(
+    base_delay: float = 1.0,
+    max_delay: float = 60.0,
+    max_retries: int = 5,
+    backoff_factor: float = 2.0,
+):
+    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            delay = base_delay
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as exc:
+                    # Check for rate limit or transient errors
+                    err_msg = str(exc).lower()
+                    is_rate_limit = any(k in err_msg for k in ['429', 'rate limit', 'ratelimit', 'too many requests'])
+                    
+                    if not is_rate_limit or attempt == max_retries - 1:
+                        raise exc
+                    
+                    # Compute exponential backoff with full jitter
+                    sleep_time = random.uniform(0, min(max_delay, delay))
+                    time.sleep(sleep_time)
+                    delay *= backoff_factor
+            return func(*args, **kwargs)
+        return wrapper
+    return decorator
+`
+
+## Integrating with Swarms agents
+
+Apply the resilient wrapper directly to custom tool calls or downstream orchestration functions:
+
+`python
+from swarms import Agent
+
+# Define your tool with backoff protection
+@retry_with_exponential_backoff(base_delay=1.5, max_delay=30.0, max_retries=4)
+def resilient_search_tool(query: str) -> str:
+    # Safe API integration logic
+    return f'Result for {query}'
+
+agent = Agent(
+    agent_name='Resilient-Research-Agent',
+    system_prompt='You are an AI research assistant capable of handling dense data pipelines.',
+    llm_name='gpt-4o',
+    max_loops=1,
+)
+`
+
+## Best practices for concurrent workflows
+
+When running ConcurrentWorkflow or AgentRearrange:
+
+1. **Set staggered initialization delays**: Stagger the launch time of parallel worker loops by 100-300ms.
+2. **Configure token-aware queuing**: Ensure that token throughput does not exceed your provider tier\'s TPM (Tokens Per Minute) quota.
+3. **Log transient failures**: Monitor retry frequencies to anticipate when an API tier upgrade is necessary.
