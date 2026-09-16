@@ -1,0 +1,86 @@
+---
+title: "Prometheus and Grafana Observability"
+description: "Production metrics collection, custom Swarm Prometheus metrics, and Grafana dashboard visualization for multi-agent workloads."
+---
+
+# Prometheus and Grafana Monitoring
+
+Enterprise Swarms deployments require end-to-end metrics export to track agent throughput, LLM token consumption, execution latencies, and worker error rates.
+
+## Core Metrics Architecture
+
+When running Swarms in distributed environments, export metrics using Prometheus standard formats:
+
+- **Agent Invocations** (`swarms_agent_runs_total`): Counter tracking total execution cycles.
+- **Run Latency** (`swarms_agent_duration_seconds`): Histogram measuring execution latency percentiles (p50, p95, p99).
+- **Token Usage** (`swarms_llm_tokens_total`): Counter partitioned by model, direction (prompt/completion), and status.
+- **Active Concurrency** (`swarms_concurrent_agents_active`): Gauge showing live in-flight agent tasks.
+
+## Prometheus Metrics Exporter Implementation
+
+```python
+import time
+from prometheus_client import start_http_server, Counter, Histogram, Gauge
+from swarms import Agent
+
+# Define Prometheus metrics
+AGENT_RUNS = Counter(
+    "swarms_agent_runs_total",
+    "Total agent execution runs",
+    ["agent_name", "status"]
+)
+
+AGENT_LATENCY = Histogram(
+    "swarms_agent_duration_seconds",
+    "Latency of agent executions in seconds",
+    ["agent_name"],
+    buckets=[0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0]
+)
+
+ACTIVE_AGENTS = Gauge(
+    "swarms_concurrent_agents_active",
+    "Number of active in-flight agents"
+)
+
+# Instrument agent runs
+def monitored_agent_run(agent: Agent, task: str):
+    ACTIVE_AGENTS.inc()
+    start = time.time()
+    try:
+        response = agent.run(task)
+        AGENT_RUNS.labels(agent_name=agent.agent_name, status="success").inc()
+        return response
+    except Exception as exc:
+        AGENT_RUNS.labels(agent_name=agent.agent_name, status="failure").inc()
+        raise exc
+    finally:
+        AGENT_LATENCY.labels(agent_name=agent.agent_name).observe(time.time() - start)
+        ACTIVE_AGENTS.dec()
+
+if __name__ == "__main__":
+    # Expose metrics on port 9090
+    start_http_server(9090)
+    print("Prometheus metrics exposed on :9090/metrics")
+```
+
+## Prometheus Scrape Configuration
+
+Add the following job to `/etc/prometheus/prometheus.yml`:
+
+```yaml
+scrape_configs:
+  - job_name: "swarms-agents"
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["swarm-worker-cluster:9090"]
+        labels:
+          environment: "production"
+          cluster: "swarms-primary"
+```
+
+## Production Grafana Dashboard Panels
+
+1. **Throughput**: `rate(swarms_agent_runs_total[5m])`
+2. **Error Rate**: `sum(rate(swarms_agent_runs_total{status="failure"}[5m])) / sum(rate(swarms_agent_runs_total[5m])) * 100`
+3. **95th Percentile Latency**: `histogram_quantile(0.95, sum(rate(swarms_agent_duration_seconds_bucket[5m])) by (le, agent_name))`
+4. **Current Concurrency**: `swarms_concurrent_agents_active`
