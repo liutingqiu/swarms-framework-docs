@@ -1,0 +1,91 @@
+---
+title: "Kubernetes Deployment & Autoscaling"
+description: "Production guide for deploying and auto-scaling Swarms agent worker pools on Kubernetes with HPA and KEDA."
+---
+
+# Kubernetes Deployment for Swarms
+
+Deploying Swarms on Kubernetes enables cloud-native orchestration, horizontal pod autoscaling (HPA), fault tolerance, and multi-cloud elasticity for large agent swarms.
+
+## Swarms Agent Worker Deployment
+
+Here is a production Kubernetes Deployment manifest with non-root security context, resource requests, and liveness probes:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: swarms-worker-pool
+  namespace: production
+  labels:
+    app.kubernetes.io/name: swarms
+    app.kubernetes.io/component: worker
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: swarms-worker
+  template:
+    metadata:
+      labels:
+        app: swarms-worker
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: agent-worker
+          image: ghcr.io/your-org/swarms-worker:v1.0.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: swarms-secrets
+                  key: openai-api-key
+            - name: REDIS_URL
+              value: "redis://redis-cluster.production.svc.cluster.local:6379/0"
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2000m"
+              memory: "4Gi"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+```
+
+## Event-Driven Autoscaling with KEDA
+
+For multi-agent queue-backed swarms, auto-scale pod replicas based on Redis queue depth:
+
+```yaml
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: swarms-queue-scaler
+  namespace: production
+spec:
+  scaleTargetRef:
+    name: swarms-worker-pool
+  minReplicaCount: 1
+  maxReplicaCount: 20
+  triggers:
+    - type: redis
+      metadata:
+        address: redis-cluster.production.svc.cluster.local:6379
+        listName: swarms_tasks_queue
+        listLength: "10"
+```
