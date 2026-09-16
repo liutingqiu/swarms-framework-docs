@@ -1,0 +1,88 @@
+---
+title: "Docker & Containerized Deployment"
+description: "Production Docker deployment guide for Swarms multi-agent architectures, worker pools, and health checks."
+---
+
+# Docker & Containerized Deployment for Swarms
+
+Deploying Swarms in production containers ensures reproducible dependencies, strict process isolation, and horizontal worker scaling across clusters.
+
+## Production Dockerfile
+
+Here is a recommended multi-stage production Dockerfile optimized for minimal image footprint and layer caching:
+
+```dockerfile
+# syntax=docker/dockerfile:1
+FROM python:3.11-slim as builder
+
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir --user -r requirements.txt
+
+# Final runtime image
+FROM python:3.11-slim
+
+WORKDIR /app
+COPY --from=builder /root/.local /root/.local
+COPY . .
+
+ENV PATH=/root/.local/bin:$PATH
+ENV PYTHONUNBUFFERED=1
+
+# Non-root security user
+RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
+USER appuser
+
+EXPOSE 8000
+CMD ["python", "agent_worker.py"]
+```
+
+## Docker Compose Setup
+
+For multi-agent systems with Redis queue and PostgreSQL state storage:
+
+```yaml
+version: "3.8"
+
+services:
+  swarm-worker:
+    build: .
+    environment:
+      - OPENAI_API_KEY=your_key_here
+      - REDIS_URL=redis://redis:6379/0
+      - SWARM_CONCURRENCY=8
+    depends_on:
+      - redis
+    restart: always
+    deploy:
+      replicas: 2
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: always
+```
+
+## Health Checks & Graceful Termination
+
+Always implement SIGTERM handling so running multi-agent tasks finish gracefully during rolling updates:
+
+```python
+import signal
+import sys
+
+running = True
+
+def handle_sigterm(signum, frame):
+    global running
+    print("Graceful shutdown requested, finishing pending batch...")
+    running = False
+
+signal.signal(signal.SIGTERM, handle_sigterm)
+```
