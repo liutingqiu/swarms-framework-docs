@@ -112,7 +112,8 @@
               "deployment/production-best-practices",
               "deployment/scaling",
               "deployment/monitoring",
-              "deployment/telemetry"
+              "deployment/telemetry",
+              "deployment/prometheus"
             ]
           },
           {
