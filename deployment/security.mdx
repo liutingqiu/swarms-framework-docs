@@ -1,0 +1,59 @@
+---
+title: "Security & Production Hardening"
+description: "Comprehensive production security best practices, prompt injection defenses, secret management, and sandboxing for Swarms agent deployments."
+---
+
+# Security & Production Hardening
+
+Deploying autonomous multi-agent systems into production introduces novel threat surfaces beyond standard web applications.
+This guide covers defense-in-depth architectural principles for securing Swarms deployments.
+
+## Threat Model & Core Principles
+
+1. **Least Privilege Tool Access**: Agents should only possess credentials and network capabilities strictly required for their role.
+2. **Indirect Prompt Injection Defense**: External inputs (web scraping, customer emails, documents) must be sanitized and isolated from system directives.
+3. **Secrets Isolation**: Never hardcode API keys or credentials into agent system prompts or memory.
+4. **Execution Sandboxing**: Arbitrary code generation must execute inside ephemeral, resource-constrained container sandboxes.
+
+## 1. Secrets Management
+
+Store all sensitive credentials in secret managers (e.g., AWS Secrets Manager, HashiCorp Vault) or inject via Kubernetes Secrets:
+
+```python
+import os
+from swarms import Agent
+
+# Fetch keys from environment, never embed in source
+api_key = os.environ.get("OPENAI_API_KEY")
+if not api_key:
+    raise ValueError("OPENAI_API_KEY environment variable is required")
+
+agent = Agent(
+    agent_name="Secure-Analyst",
+    model_name="gpt-4o",
+    system_prompt="You are a security-conscious data analyst. Never disclose credentials or internal configurations.",
+)
+```
+
+## 2. Guarding Against Prompt Injection
+
+Wrap untrusted user or third-party web content inside delimited boundary markers and explicitly instruct models to treat enclosed content purely as data:
+
+```python
+def wrap_untrusted_input(data: str) -> str:
+    """Sanitize and encapsulate third-party content with clear delimiters."""
+    # Strip potential delimiter spoofing
+    sanitized = data.replace("<USER_CONTENT>", "").replace("</USER_CONTENT>", "")
+    return f"<USER_CONTENT>\n{sanitized}\n</USER_CONTENT>"
+```
+
+## 3. Sandboxed Code Execution
+
+When using code execution tools, delegate code execution to isolated Docker containers or WebAssembly runtimes rather than host process shells.
+
+## Verification Checklist
+
+- [ ] Non-root execution users configured in Docker/Pod specs
+- [ ] Network policies restricting egress to verified LLM API endpoints
+- [ ] Strict rate limits configured across all inbound routes
+- [ ] Memory state encrypted at rest and in transit
